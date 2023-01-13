@@ -1,68 +1,91 @@
-import logging
 import sys
-from PyQt5 import QtWidgets, QtGui, QtCore
-import pymesh
-# this code sucks
+from PyQt5.QtCore import Qt, QFileInfo
+from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow, QFileDialog
+import numpy as np
+from matplotlib import tri
+import json
 
 
-class Voxelizer(QtWidgets.QWidget):
+class Voxelizer(QMainWindow):
     def __init__(self):
         super().__init__()
-
-        # Create a label for displaying instructions
-        self.instructions = QtWidgets.QLabel("Drag and drop an .obj file here")
-        self.instructions.setAlignment(QtCore.Qt.AlignCenter)
-
-        # Create a button for performing the voxelization
-        self.convert_button = QtWidgets.QPushButton("Convert")
-        self.convert_button.clicked.connect(self.convert_obj)
-        self.convert_button.setEnabled(False)
-
-        # Create a layout for the widgets
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self.instructions)
-        layout.addWidget(self.convert_button)
-
-        # Set the window properties
         self.setAcceptDrops(True)
         self.setWindowTitle("Voxelizer")
+        self.setGeometry(100, 100, 600, 400)
+        self.label = QLabel("Drag and drop a model file to voxelize", self)
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setGeometry(0, 0, 600, 400)
+        self.show()
 
     def dragEnterEvent(self, event):
-        print("DropEntered")
-        if event.mimeData().hasFormat("text/uri-list"):
+        if event.mimeData().hasUrls():
             event.accept()
         else:
             event.ignore()
 
     def dropEvent(self, event):
-        print("DropReceived")
         file_path = event.mimeData().urls()[0].toLocalFile()
-        if file_path.endswith(".obj"):
-            self.file_path = file_path
-            self.instructions.setText("File ready for conversion")
-            self.convert_button.setEnabled(True)
+        file_info = QFileInfo(file_path)
+        if file_info.suffix() in ["obj"]:
+            self.voxelize_model(file_path)
         else:
-            self.instructions.setText("Invalid file format")
-            self.convert_button.setEnabled(False)
+            self.label.setText("Invalid file format")
 
-    def convert_obj(self):
-        print("Loading")
-        # Load the original .obj file
-        mesh = pymesh.load_mesh(self.file_path)
+    def voxelize_model(self, file_path):
+        # Load the obj file
+        with open(file_path) as f:
+            lines = f.readlines()
+            vertices = []
+            faces = []
+            for line in lines:
+                if line.startswith("v "):
+                    vertices.append(list(map(float, line.strip().split()[1:])))
+                elif line.startswith("f "):
+                    faces.append(list(map(int, line.strip().split()[1:])))
 
-        # Voxelize the mesh
-        print("Voxelizing")
-        voxelized_mesh = pymesh.voxelize(mesh, 0.1)
+        # Define the resolution of the voxel grid
+        resolution = 0.1
 
-        # Save the voxelized mesh as a new .obj file
-        print("Saving")
-        pymesh.save_mesh("voxelized.obj", voxelized_mesh)
-        self.instructions.setText("File converted and saved as voxelized.obj")
-        self.convert_button.setEnabled(False)
+        # Create the voxel grid
+        x_min, y_min, z_min = np.min(vertices, axis=0)
+        x_max, y_max, z_max = np.max(vertices, axis=0)
+        x_grid, y_grid, z_grid = np.mgrid[
+                                 x_min:x_max:resolution,
+                                 y_min:y_max:resolution,
+                                 z_min:z_max:resolution
+                                 ]
+        voxel_grid = np.zeros(x_grid.shape, dtype=bool)
+
+        # Iterate over the triangles of the 3D model
+        triangulation = tri.Triangulation(
+            [vertex[0] for vertex in vertices],
+            [vertex[1] for vertex in vertices],
+            faces
+        )
+        for simplex in triangulation.simplices:
+            # Extract the coordinates of the vertices of the current triangle
+            x = [vertices[i - 1][0] for i in simplex]
+            y = [vertices[i - 1][1] for i in simplex]
+            z = [vertices[i - 1][2] for i in simplex]
+            # Find the voxels that are inside or intersecting with the triangle
+            voxel_indices = np.where(
+                np.logical_and.reduce([
+                    x_grid >= min(x), x_grid < max(x),
+                    y_grid >= min(y), y_grid < max(y),
+                    z_grid >= min(z), z_grid < max(z)
+                ])
+            )
+            # Set the voxels to be 'on'
+            voxel_grid[voxel_indices] = True
+
+        # save the voxelized model as json
+        with open('voxelized_model.json', 'w') as fp:
+            json.dump(voxel_grid.tolist(), fp)
+        self.label.setText("Model voxelized successfully")
 
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
+    app = QApplication(sys.argv)
     voxelizer = Voxelizer()
-    voxelizer.show()
     sys.exit(app.exec_())
